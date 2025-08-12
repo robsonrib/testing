@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Bola Pulante</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #87ceeb;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      color: #123;
+      height: 100%;
+    }
+    #wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      padding: 10px;
+    }
+    canvas {
+      border: 3px solid #1b3a4b;
+      border-radius: 10px;
+      background: linear-gradient(#a6ddff, #87ceeb 45%, #c0f6ff 46%);
+      touch-action: manipulation;
+    }
+    .hud {
+      display: flex;
+      gap: 16px;
+      font-weight: 700;
+      font-size: 16px;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    .btns { display: flex; gap: 8px; }
+    button {
+      border: none;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-weight: 700;
+      cursor: pointer;
+      background: #1b3a4b;
+      color: #fff;
+    }
+    button:disabled { opacity: .6; cursor: default; }
+    .tip { font-size: 14px; opacity: .9; }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <div class="hud">
+      <div>🏆 Pontos: <span id="score">0</span></div>
+      <div>🚀 Nível: <span id="level">1</span></div>
+      <div>❤️ Vidas: <span id="lives">3</span></div>
+    </div>
+    <canvas id="game" width="900" height="500" aria-label="Jogo Bola Pulante"></canvas>
+    <div class="btns">
+      <button id="btnStart">▶️ Iniciar</button>
+      <button id="btnPause" disabled>⏸️ Pausar</button>
+      <button id="btnRestart" disabled>🔄 Reiniciar</button>
+    </div>
+    <div class="tip">PC: Barra de espaço / ↑ para pular. | Celular/Tablet: toque na tela.</div>
+  </div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const scoreEl = document.getElementById('score');
+  const livesEl = document.getElementById('lives');
+  const levelEl = document.getElementById('level');
+  const btnStart = document.getElementById('btnStart');
+  const btnPause = document.getElementById('btnPause');
+  const btnRestart = document.getElementById('btnRestart');
+
+  // Mundo
+  const W = canvas.width;
+  const H = canvas.height;
+  const groundY = H - 90; // linha do chão
+  let gameSpeed = 6;      // pixels por frame (aumenta com a dificuldade)
+  let spawnTimer = 0;
+  let spawnInterval = 90; // frames entre obstáculos (diminui ao avançar)
+
+  // Jogador
+  const ball = {
+    x: 140,
+    y: groundY - 26,
+    r: 26,
+    vy: 0,
+    gravity: 0.9,
+    jumpForce: 17,
+    canJump: true,
+    jump() {
+      if (this.canJump) {
+        this.vy = -this.jumpForce;
+        this.canJump = false;
+      }
+    },
+    update() {
+      this.vy += this.gravity;
+      this.y += this.vy;
+      if (this.y + this.r >= groundY) {
+        this.y = groundY - this.r;
+        this.vy = 0;
+        this.canJump = true;
+      }
+    },
+    draw() {
+      // Corpo da bola
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2);
+      ctx.fillStyle = '#ff6b6b';
+      ctx.fill();
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#1b3a4b';
+      ctx.stroke();
+
+      // Carinha amigável
+      // olhos
+      ctx.fillStyle = '#1b3a4b';
+      const eyeY = this.y - 6;
+      ctx.beginPath();
+      ctx.arc(this.x - 8, eyeY, 3.5, 0, Math.PI * 2);
+      ctx.arc(this.x + 8, eyeY, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+      // sorriso
+      ctx.beginPath();
+      ctx.arc(this.x, this.y + 4, 10, 0.15*Math.PI, 0.85*Math.PI);
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+    }
+  };
+
+  // Obstáculos
+  const obstacles = [];
+  const TYPES = ['buraco','pedra','toco']; // buraco = gap; pedra/toco = sólidos
+
+  function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+
+  function spawnObstacle() {
+    const type = TYPES[rand(0, TYPES.length - 1)];
+    if (type === 'buraco') {
+      const width = rand(80, 150);
+      obstacles.push({
+        type,
+        x: W + rand(0, 120),
+        y: groundY,
+        width,
+        height: 999, // só para referência (não usado no desenho do buraco)
+        scored: false,
+      });
+    } else if (type === 'pedra') {
+      const size = rand(28, 52);
+      obstacles.push({
+        type,
+        x: W + rand(0, 120),
+        y: groundY - size,
+        width: size,
+        height: size,
+        scored: false,
+      });
+    } else { // toco
+      const w = rand(26, 42);
+      const h = rand(36, 64);
+      obstacles.push({
+        type,
+        x: W + rand(0, 120),
+        y: groundY - h,
+        width: w,
+        height: h,
+        scored: false,
+      });
+    }
+  }
+
+  // Estado do jogo
+  let running = false;
+  let paused = false;
+  let score = 0;
+  let lives = 3;
+  let level = 1;
+  let frame = 0;
+
+  function resetGame() {
+    obstacles.length = 0;
+    score = 0;
+    lives = 3;
+    level = 1;
+    gameSpeed = 6;
+    spawnInterval = 90;
+    spawnTimer = 0;
+    frame = 0;
+    ball.x = 140;
+    ball.y = groundY - ball.r;
+    ball.vy = 0;
+    ball.canJump = true;
+    updateHUD();
+  }
+
+  function updateHUD() {
+    scoreEl.textContent = score;
+    livesEl.textContent = lives;
+    levelEl.textContent = level;
+  }
+
+  function incDifficulty() {
+    // Aumenta nível a cada 5 pontos, acelera o jogo e reduz intervalo de spawn
+    const newLevel = 1 + Math.floor(score / 5);
+    if (newLevel !== level) {
+      level = newLevel;
+      gameSpeed = 6 + (level - 1) * 0.7;
+      spawnInterval = Math.max(45, 90 - (level - 1) * 5);
+    }
+  }
+
+  function circleRectCollision(cx, cy, cr, rx, ry, rw, rh) {
+    // Colisão círculo-retângulo
+    const testX = Math.max(rx, Math.min(cx, rx + rw));
+    const testY = Math.max(ry, Math.min(cy, ry + rh));
+    const distX = cx - testX;
+    const distY = cy - testY;
+    return (distX * distX + distY * distY) <= (cr * cr);
+  }
+
+  function update() {
+    if (!running || paused) return;
+
+    frame++;
+    // Física da bola
+    ball.update();
+
+    // Spawn de obstáculos
+    spawnTimer++;
+    if (spawnTimer >= spawnInterval) {
+      spawnObstacle();
+      spawnTimer = 0;
+    }
+
+    // Atualiza obstáculos
+    for (let i = obstacles.length - 1; i >= 0; i--) {
+      const ob = obstacles[i];
+      ob.x -= gameSpeed;
+
+      // Verifica pontuação (quando a bola passa totalmente o obstáculo)
+      if (!ob.scored) {
+        if (ob.type === 'buraco') {
+          // Para buraco, conta quando a bola passa o final do buraco sem ter caído
+          if (ball.x - ball.r > ob.x + ob.width) {
+            ob.scored = true;
+            score++;
+            incDifficulty();
+            updateHUD();
+          }
+        } else {
+          // Para sólidos, quando a borda direita do obstáculo passa atrás da bola
+          if (ob.x + ob.width < ball.x - ball.r) {
+            ob.scored = true;
+            score++;
+            incDifficulty();
+            updateHUD();
+          }
+        }
+      }
+
+      // Colisão
+      let hit = false;
+      if (ob.type === 'buraco') {
+        // Se a bola estiver sobre a área do buraco e abaixo do chão -> caiu
+        const isOverHole = (ball.x + ball.r > ob.x) && (ball.x - ball.r < ob.x + ob.width);
+        if (isOverHole && ball.y + ball.r >= groundY) {
+          hit = true; // caiu no buraco
+        }
+      } else {
+        if (circleRectCollision(ball.x, ball.y, ball.r, ob.x, ob.y, ob.width, ob.height)) {
+          hit = true;
+        }
+      }
+
+      if (hit) {
+        lives--;
+        updateHUD();
+        // "empurra" jogável para frente e limpa obstáculos próximos
+        ball.y = groundY - ball.r;
+        ball.vy = 0;
+        ball.canJump = true;
+        // Aplica um pequeno "knockback" visual removendo obstáculos muito próximos
+        for (let j = obstacles.length - 1; j >= 0; j--) {
+          if (obstacles[j].x < ball.x + 60) obstacles.splice(j, 1);
+        }
+        if (lives <= 0) {
+          gameOver();
+          return;
+        }
+      }
+
+      // Remove se saiu da tela
+      if (ob.x + (ob.width || 0) < -50) {
+        obstacles.splice(i, 1);
+      }
+    }
+  }
+
+  function drawBackground() {
+    // Céu já é o background do canvas
+    // Desenha nuvens
+    ctx.save();
+    ctx.globalAlpha = 0.8;
+    drawCloud(120 - (frame * 0.3) % (W + 200), 90, 40);
+    drawCloud(420 - (frame * 0.2) % (W + 200), 50, 30);
+    drawCloud(760 - (frame * 0.25) % (W + 200), 120, 36);
+    ctx.restore();
+
+    // Montanhas (parallax)
+    ctx.fillStyle = '#8fd3a1';
+    ctx.beginPath();
+    ctx.moveTo(0, groundY - 110);
+    ctx.lineTo(110, groundY - 170);
+    ctx.lineTo(220, groundY - 110);
+    ctx.lineTo(330, groundY - 160);
+    ctx.lineTo(440, groundY - 110);
+    ctx.lineTo(550, groundY - 170);
+    ctx.lineTo(660, groundY - 110);
+    ctx.lineTo(770, groundY - 160);
+    ctx.lineTo(900, groundY - 110);
+    ctx.lineTo(900, groundY);
+    ctx.lineTo(0, groundY);
+    ctx.closePath();
+    ctx.fill();
+
+    // Chão
+    ctx.fillStyle = '#6ab04c';
+    ctx.fillRect(0, groundY, W, H - groundY);
+    // Textura do chão
+    for (let x = 0; x < W; x += 28) {
+      ctx.fillStyle = '#5aa040';
+      ctx.fillRect((x - (frame * (gameSpeed*0.6)) % 28), groundY + 20, 14, 6);
+    }
+  }
+
+  function drawCloud(x, y, s) {
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(x, y, s, 0, Math.PI * 2);
+    ctx.arc(x + s * 0.8, y + 6, s * 0.9, 0, Math.PI * 2);
+    ctx.arc(x - s * 0.8, y + 10, s * 0.7, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawObstacles() {
+    for (const ob of obstacles) {
+      if (ob.type === 'buraco') {
+        // desenhar bordas do buraco
+        // borda esquerda
+        ctx.fillStyle = '#1b3a4b';
+        ctx.fillRect(ob.x - 2, groundY - 6, 4, 6);
+        // borda direita
+        ctx.fillRect(ob.x + ob.width - 2, groundY - 6, 4, 6);
+        // sombra do buraco
+        const grad = ctx.createLinearGradient(0, groundY, 0, groundY + 40);
+        grad.addColorStop(0, '#333');
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(ob.x, groundY, ob.width, 40);
+      } else if (ob.type === 'pedra') {
+        ctx.fillStyle = '#b8b8b8';
+        ctx.fillRect(ob.x, ob.y, ob.width, ob.height);
+        ctx.strokeStyle = '#1b3a4b';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(ob.x, ob.y, ob.width, ob.height);
+        // rachaduras simples
+        ctx.beginPath();
+        ctx.moveTo(ob.x + 6, ob.y + ob.height/2);
+        ctx.lineTo(ob.x + ob.width/2, ob.y + ob.height - 6);
+        ctx.moveTo(ob.x + ob.width - 8, ob.y + 10);
+        ctx.lineTo(ob.x + ob.width/2, ob.y + ob.height/2);
+        ctx.stroke();
+      } else { // toco
+        ctx.fillStyle = '#a97447';
+        ctx.fillRect(ob.x, ob.y, ob.width, ob.height);
+        ctx.strokeStyle = '#5c3b25';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(ob.x, ob.y, ob.width, ob.height);
+        // anéis do tronco
+        for (let k = 4; k < ob.height; k += 10) {
+          ctx.beginPath();
+          ctx.moveTo(ob.x + 3, ob.y + k);
+          ctx.lineTo(ob.x + ob.width - 3, ob.y + k);
+          ctx.stroke();
+        }
+      }
+    }
+  }
+
+  function drawHUDOverlays() {
+    if (!running) {
+      drawCenteredBox('Bola Pulante', 'Toque ou pressione Espaço para começar', 'Evite buracos, pedras e tocos!');
+    } else if (paused) {
+      drawCenteredBox('Jogo Pausado', 'Pressione Espaço ou clique em "Continuar"', '');
+    }
+  }
+
+  function drawCenteredBox(title, subtitle, hint) {
+    const boxW = 540;
+    const boxH = 220;
+    const boxX = (W - boxW) / 2;
+    const boxY = (H - boxH) / 2;
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.fillRect(boxX, boxY, boxW, boxH);
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(boxX, boxY, boxW, boxH);
+
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 36px system-ui';
+    ctx.textAlign = 'center';
+    ctx.fillText(title, W/2, boxY + 60);
+    ctx.font = '600 18px system-ui';
+    ctx.fillText(subtitle, W/2, boxY + 110);
+    if (hint) ctx.fillText(hint, W/2, boxY + 140);
+  }
+
+  function gameOver() {
+    running = false;
+    paused = false;
+    btnPause.disabled = true;
+    btnRestart.disabled = false;
+    // Tela de game over
+    draw(); // desenha estado final
+    const msg = `Fim de jogo! Pontos: ${score}\nClique em Reiniciar para jogar de novo.`;
+    setTimeout(() => {
+      alert(msg);
+    }, 50);
+  }
+
+  function draw() {
+    // Limpa
+    ctx.clearRect(0, 0, W, H);
+    // Fundo e chão
+    drawBackground();
+    // Obstáculos
+    drawObstacles();
+    // Bola
+    ball.draw();
+    // Sobreposições (menus/pausa)
+    drawHUDOverlays();
+  }
+
+  function loop() {
+    update();
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  // Controles
+  function togglePause() {
+    if (!running) return;
+    paused = !paused;
+    btnPause.textContent = paused ? '▶️ Continuar' : '⏸️ Pausar';
+  }
+
+  function startGame() {
+    if (running) return;
+    resetGame();
+    running = true;
+    paused = false;
+    btnPause.disabled = false;
+    btnRestart.disabled = false;
+  }
+
+  function restartGame() {
+    resetGame();
+    running = true;
+    paused = false;
+    btnPause.disabled = false;
+  }
+
+  // Eventos
+  btnStart.addEventListener('click', startGame);
+  btnPause.addEventListener('click', togglePause);
+  btnRestart.addEventListener('click', restartGame);
+
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' || e.code === 'ArrowUp') {
+      if (!running) startGame();
+      else if (paused) togglePause();
+      else ball.jump();
+      e.preventDefault();
+    } else if (e.code === 'KeyP') {
+      togglePause();
+    } else if (e.code === 'KeyR') {
+      restartGame();
+    }
+  });
+
+  canvas.addEventListener('pointerdown', () => {
+    if (!running) startGame();
+    else if (paused) togglePause();
+    else ball.jump();
+  });
+
+  // Start
+  resetGame();
+  loop();
+})();
+</script>
+</body>
+</html>
